@@ -1,0 +1,797 @@
+  
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>3D Meteor → Earth Simulation (Interactive Earth)</title>
+  <style>
+    html,body{height:100%;margin:0;overflow:hidden;background:#000;color:#dbe7ff;font-family:sans-serif}
+    #app{position:relative;width:100%;height:100%}
+    #gl{width:100%;height:100%;display:block;cursor:grab}
+    .panel {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      width: 280px;
+      background: rgba(15,23,36,0.9);
+      border-radius: 12px;
+      padding: 12px;
+      color: #fff;
+      font-size: 13px;
+      cursor: default;
+    }
+    label{display:block;margin-top:8px}
+    input[type=range]{width:100%}
+    .controls{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
+    button, select{padding:6px 8px;border:none;border-radius:6px;cursor:pointer}
+    .stat{margin-top:8px;font-size:12px}
+    .tabContent{margin-top:8px}
+  </style>
+</head>
+<body>
+  <div id="app">
+    <canvas id="gl"></canvas>
+    <div class="panel" id="controlPanel">
+      <h3 id="panelHeader" style="cursor:move;">Controls</h3>
+
+      <!-- Tab buttons -->
+      <div style="display:flex;gap:6px;margin-bottom:8px;">
+        <button id="tabUser">User Input</button>
+        <button id="tabDataset">Dataset</button>
+      </div>
+
+      <!-- User Input Tab -->
+      <div id="userTab" class="tabContent">
+        <label>
+          <b>Show:</b>
+          <select id="viewMode">
+            <option value="impacts">Impacts</option>
+            <option value="orbiting">Orbiting Asteroids</option>
+          </select>
+        </label>
+        <label>
+          Size 
+          <input id="size" type="range" min="1" max="10" step="0.1" value="2">
+          <input id="sizeVal" type="number" min="1" max="10" step="0.1" value="2" style="width:60px;">
+        </label>
+
+        <label>
+          Speed 
+          <input id="speed" type="range" min="0.1" max="72" step="0.1" value="15">
+          <input id="speedVal" type="number" min="0.1" max="72" step="0.1" value="15" style="width:60px;">
+        </label>
+
+        <label>
+          Distance 
+          <input id="dist" type="range" min="2" max="20" step="0.1" value="2">
+          <input id="distVal" type="number" min="2" max="20" step="0.1" value="3" style="width:60px;">
+        </label>
+
+        <div class="controls">
+          <button id="pause">Pause</button>
+          <button id="reset">Reset</button>
+          <button id="analyze">Analyze Impact</button>
+        </div>
+
+        <label>Meteor List</label>
+        <select id="meteorList"><option value="">-- No meteors --</option></select>
+        <button id="asteroidPOV">Asteroid POV</button>
+        <button id="earthPOV">Earth POV</button>
+
+        <label>Saved Impacts</label>
+        <select id="impactHistory"><option value="">-- Saved impacts --</option></select>
+        <button id="rerunImpact">Rerun</button>
+      </div>
+
+      <!-- Dataset Tab -->
+      <div id="datasetTab" class="tabContent" style="display:none;">
+      <label><b>Dataset Type</b></label>
+      <select id="datasetSource">
+      <option value="get_impacts">🌋 Historical Impacts</option>
+      <option value="nasa_asteroids">🚀 NASA Near Earth Objects</option>
+      <option value="saved_impacts">💾 Saved Simulations</option>
+      </select>
+      <br><br>
+      <label><b>Select Impact</b></label>
+      <select id="datasetSelect">
+      <option value="">-- Choose dataset impact --</option>
+      </select>
+      <button id="loadDataset">Load Dataset</button>
+      <button id="runDataset">Run Selected</button>
+      </div>
+
+      <hr>
+      <div id="status" class="stat">Status: ready</div>
+      <div id="impactInfo" class="stat"></div>
+    </div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.module.js"
+    }
+  }
+  </script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/tween.js/20.0.0/tween.umd.js"></script>
+  <script type="module">
+
+  import * as THREE from 'three';
+  import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.152.2/examples/jsm/controls/OrbitControls.js';
+  import { DecalGeometry } from 'https://cdn.jsdelivr.net/npm/three@0.152.2/examples/jsm/geometries/DecalGeometry.js';
+
+// === 3D Scene Setup ===
+const canvas = document.getElementById('gl');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.shadowMap.enabled = true;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x000000);
+
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+camera.position.set(0, 1.5, 4);
+scene.add(camera);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.enablePan = false;
+controls.minDistance = 1.5;
+controls.maxDistance = 10;
+controls.update();
+
+const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1.2);
+scene.add(hemi);
+const dir = new THREE.DirectionalLight(0xffffff, 1);
+dir.position.set(5, 3, 5);
+scene.add(dir);
+
+// === Earth setup variables ===
+const R = 1;
+const loader = new THREE.TextureLoader();
+const earthTextureURL = 'https://threejs.org/examples/textures/land_ocean_ice_cloud_2048.jpg';
+
+  let earthMesh; // declare globally at top
+
+loader.load(earthTextureURL, (tex) => {
+  const earthMat = new THREE.MeshPhongMaterial({
+    map: tex,
+    specular: new THREE.Color(0x333333),
+    shininess: 10
+  });
+  const earthGeo = new THREE.SphereGeometry(R, 64, 64);
+  earthMesh = new THREE.Mesh(earthGeo, earthMat);  // ← assign to global
+  earthMesh.name = "Earth";
+  scene.add(earthMesh);
+
+  loader.load("https://raw.githubusercontent.com/roblabs/planet-textures/main/2k_earth_nightmap.jpg", (nightTex) => {
+    const nightMat = new THREE.MeshBasicMaterial({ map: nightTex, transparent: true, opacity: 0.25 });
+    const nightMesh = new THREE.Mesh(earthGeo.clone(), nightMat);
+    scene.add(nightMesh);
+  });
+});
+// atmosphere
+const atmosphere = new THREE.Mesh(
+  new THREE.SphereGeometry(R * 1.05, 64, 64),
+  new THREE.MeshBasicMaterial({ color: 0x3b82f6, transparent: true, opacity: 0.18, blending: THREE.AdditiveBlending })
+);
+scene.add(atmosphere);
+// stars
+const starGeo = new THREE.BufferGeometry();
+const starCount = 2000;
+const starPos = new Float32Array(starCount * 3);
+for (let i = 0; i < starCount * 3; i++) starPos[i] = (Math.random() - 0.5) * 2000;
+starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 1 }));
+scene.add(stars);
+
+  // UI elements
+  // View mode switch
+  const viewMode = document.getElementById("viewMode");
+  let showOrbiting = false;
+  viewMode.onchange = () => {
+    showOrbiting = viewMode.value === "orbiting";
+    updateAsteroidView();
+  };
+
+  // Orbiting asteroids demo
+  let orbitingAsteroids = [];
+  function spawnOrbitingAsteroids(count=5) {
+    // Remove previous
+    for (const a of orbitingAsteroids) scene.remove(a);
+    orbitingAsteroids = [];
+    for (let i=0; i<count; i++) {
+      const size = Math.random()*0.05+0.01;
+      const geom = new THREE.SphereGeometry(size, 16, 16);
+      const mat = new THREE.MeshStandardMaterial({ color: 0x8888ff, emissive: 0x2222ff, emissiveIntensity: 1.0 });
+      const asteroid = new THREE.Mesh(geom, mat);
+      // Random orbit
+      const angle = Math.random()*Math.PI*2;
+      const radius = R + 2 + Math.random()*2;
+      asteroid.userData = {
+        orbitRadius: radius,
+        orbitSpeed: 0.005+Math.random()*0.01,
+        orbitAngle: angle,
+        orbitIncline: Math.random()*Math.PI/4,
+      };
+      asteroid.position.set(
+        Math.cos(angle)*radius,
+        Math.sin(asteroid.userData.orbitIncline)*radius,
+        Math.sin(angle)*radius
+      );
+      scene.add(asteroid);
+      orbitingAsteroids.push(asteroid);
+    }
+  }
+
+  function updateAsteroidView() {
+    if (showOrbiting) {
+      spawnOrbitingAsteroids();
+      // Hide meteors
+      for (const m of meteors) m.visible = false;
+    } else {
+      // Remove orbiting asteroids
+      for (const a of orbitingAsteroids) scene.remove(a);
+      orbitingAsteroids = [];
+      // Show meteors
+      for (const m of meteors) m.visible = true;
+    }
+  }
+  const sizeEl = document.getElementById('size');
+  const speedEl = document.getElementById('speed');
+  const distEl = document.getElementById('dist');
+  const sizeVal = document.getElementById('sizeVal');
+  const speedVal = document.getElementById('speedVal');
+  const distVal = document.getElementById('distVal');
+  const pauseBtn = document.getElementById('pause');
+  const resetBtn = document.getElementById('reset');
+  const analyzeBtn = document.getElementById('analyze');
+  const status = document.getElementById('status');
+  const impactInfo = document.getElementById('impactInfo');
+  const meteorList = document.getElementById("meteorList");
+
+  // Tab switching
+  const userTab = document.getElementById("userTab");
+  const datasetTab = document.getElementById("datasetTab");
+  document.getElementById("tabUser").onclick = () => {
+    userTab.style.display = "block"; datasetTab.style.display = "none";
+  };
+  document.getElementById("tabDataset").onclick = () => {
+    userTab.style.display = "none"; datasetTab.style.display = "block";
+  };
+
+  function bindSliderAndBox(slider, box) {
+    slider.addEventListener('input', () => { box.value = parseFloat(slider.value).toFixed(1); });
+    box.addEventListener('input', () => {
+      let val = parseFloat(box.value);
+      if (!isNaN(val)) {
+        val = Math.max(slider.min, Math.min(slider.max, val));
+        slider.value = val;
+        box.value = val.toFixed(1);
+      }
+    });
+  }
+  bindSliderAndBox(sizeEl, sizeVal);
+  bindSliderAndBox(speedEl, speedVal);
+  bindSliderAndBox(distEl, distVal);
+
+  // POV buttons
+  const asteroidPOVBtn = document.getElementById("asteroidPOV");
+  const earthPOVBtn = document.getElementById("earthPOV");
+  let followMeteor = null;
+
+  asteroidPOVBtn.onclick = () => {
+    const selectedId = meteorList.value;
+    if (!selectedId) { status.textContent = "⚠️ No meteor selected"; return; }
+    followMeteor = meteors.find(m => m.userData.id == selectedId);
+    if (followMeteor) { status.textContent = `🎥 Following Meteor ${selectedId}`; }
+  };
+  earthPOVBtn.onclick = () => { followMeteor = null; status.textContent = "🌍 Earth POV"; };
+
+  // Pause/reset
+  let paused = false;
+  pauseBtn.onclick = ()=>{paused=!paused; pauseBtn.textContent = paused?"Resume":"Pause"};
+ resetBtn.onclick = () => {
+  status.textContent = "🔄 Resetting simulation...";
+  impactInfo.textContent = "";
+
+  // 🧹 1️⃣ Remove meteors
+  meteors.forEach(m => scene.remove(m));
+  meteors = [];
+  meteorList.innerHTML = '<option value="">-- No meteors --</option>';
+
+  // 🪐 2️⃣ Remove orbiting asteroids
+  orbitingAsteroids.forEach(a => scene.remove(a));
+  orbitingAsteroids = [];
+
+  // 💥 3️⃣ Remove crater decals, particles, etc.
+  const keep = [earthMesh, hemi, dir];
+  scene.children
+    .filter(obj => !keep.includes(obj))
+    .forEach(obj => scene.remove(obj));
+
+  // 🧭 4️⃣ Reset camera & controls
+  controls.reset();
+  camera.position.set(0, 1.5, 4);
+  camera.lookAt(0, 0, 0);
+
+  // 🗂️ 5️⃣ Reset saved impacts and UI
+  savedImpacts = [];
+  historyList.innerHTML = '<option value="">-- Saved impacts --</option>';
+  followMeteor = null;
+  paused = false;
+  pauseBtn.textContent = "Pause";
+  showOrbiting = false;
+  viewMode.value = "impacts";
+
+  // 🪶 6️⃣ Re-add essentials if missing
+  [hemi, dir, earthMesh].forEach(o => {
+    if (!scene.children.includes(o)) scene.add(o);
+  });
+
+  // 🌍 7️⃣ Reset dataset UI
+  datasetImpacts = {};
+  datasetSelect.innerHTML = '<option value="">-- Choose dataset impact --</option>';
+
+  status.textContent = "✅ Earth reset complete — ready for new impacts or datasets.";
+};
+
+
+  // Meteors
+  let meteors = [];
+  const raycaster = new THREE.Raycaster();
+  const mouse = new THREE.Vector2();
+  let clickLock = false;
+
+  window.addEventListener("mousedown", (event) => {
+    if (event.target.closest(".panel")) return;
+    if (clickLock) return;
+    clickLock = true;
+    mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+    const intersects = raycaster.intersectObject(earthMesh);
+    if (intersects.length > 0) spawnMeteorAt(intersects[0].point);
+  });
+  window.addEventListener("mouseup", () => { clickLock = false; });
+
+  let meteorCounter = 0;
+  function spawnMeteorAt(targetPoint){  
+    const kmSize = parseFloat(sizeEl.value);          // size in km (from UI)
+    const radiusSize = kmSize * 0.02;                // visual radius
+    const speed = parseFloat(speedEl.value) / 100;
+    const distance = parseFloat(distEl.value) + 5;
+
+    const geom = new THREE.SphereGeometry(radiusSize, 32, 32);
+    const mat = new THREE.MeshStandardMaterial({ color: 0xff3300, emissive: 0xff6600, emissiveIntensity: 2.0 });
+    const meteor = new THREE.Mesh(geom, mat);
+
+    const dirVec = targetPoint.clone().normalize();
+    const up = new THREE.Vector3(0,1,0);
+    let sideVec = new THREE.Vector3().crossVectors(dirVec, up).normalize();
+    if (sideVec.length() < 0.01) sideVec = new THREE.Vector3(1,0,0);
+
+    const startPos = targetPoint.clone().addScaledVector(dirVec, distance * 5).addScaledVector(sideVec, distance * 3);
+    meteor.position.copy(startPos);
+
+    const moveDir = new THREE.Vector3().subVectors(targetPoint, startPos).normalize();
+
+    meteor.userData = {
+      dir: moveDir,
+      speed,
+      target: targetPoint.clone(),
+      id: ++meteorCounter,
+      sizeKm: kmSize,          // <-- store size (km) for later (impact scaling)
+    };
+
+    scene.add(meteor);
+    meteors.push(meteor);
+
+    const option = document.createElement("option");
+    option.value = meteor.userData.id; option.textContent = `Meteor ${meteor.userData.id}`;
+    meteorList.appendChild(option);
+
+    impactInfo.textContent = `Meteor ${meteor.userData.id} launched toward impact point...`;  
+  }
+
+
+  // Saved impacts
+  let savedImpacts = [];
+  const historyList = document.getElementById("impactHistory");
+  document.getElementById("rerunImpact").onclick = () => {
+    const selectedId = historyList.value;
+    if (!selectedId) { status.textContent = "⚠️ No saved impact selected"; return; }
+    const record = savedImpacts.find(i => i.id == selectedId);
+    if (record) {
+      // Visually replay the impact by respawning a meteor
+      const kmSize = record.size;
+      const size = kmSize * 0.02;
+      const speed = record.speed / 100;
+      const distance = 8; // Use a default distance for replay
+      const geom = new THREE.SphereGeometry(size, 32, 32);
+      const mat = new THREE.MeshStandardMaterial({ color: 0xff3300, emissive: 0xff6600, emissiveIntensity: 2.0 });
+      const dirVec = record.target.clone().normalize();
+      const up = new THREE.Vector3(0,1,0);
+      let sideVec = new THREE.Vector3().crossVectors(dirVec, up).normalize();
+      if (sideVec.length() < 0.01) sideVec = new THREE.Vector3(1,0,0);
+      const startPos = record.target.clone().addScaledVector(dirVec, distance * 5).addScaledVector(sideVec, distance * 3);
+      const meteor = new THREE.Mesh(geom, mat);
+      meteor.position.copy(startPos);
+      const moveDir = new THREE.Vector3().subVectors(record.target, startPos).normalize();
+      meteor.userData = { dir: moveDir, speed, target: record.target.clone(), id: `replay-${record.id}` };
+      scene.add(meteor); meteors.push(meteor);
+      status.textContent = `🔁 Rerunning impact ${record.id}...`;
+      impactInfo.textContent = `Meteor replay launched toward impact point...`;
+      sendImpactToBackend(record.target, record.size, record.speed);
+
+      // Set asteroid POV to follow this replay meteor
+      followMeteor = meteor;
+    }
+  };
+
+  let datasetImpacts = {};
+const datasetSelect = document.getElementById("datasetSelect");
+const datasetSource = document.getElementById("datasetSource");
+const loadDatasetBtn = document.getElementById("loadDataset");
+
+async function loadDatasetImpacts() {
+  const endpoint = datasetSource.value;
+  status.textContent = `📡 Loading ${endpoint}...`;
+  try {
+    const response = await fetch(`data/${endpoint}.json`);
+    const data = await response.json();
+
+    datasetImpacts = {};
+    datasetSelect.innerHTML = '<option value="">-- Choose dataset impact --</option>';
+
+    // Handle both array and object results
+    const list = Array.isArray(data)
+      ? data
+      : data.asteroids || [];
+
+    for (const item of list) {
+      const id = item.id || item.name || Math.random().toString(36).substring(2, 8);
+      const name = item.name || `Asteroid ${id}`;
+      const lat = item.lat || item.latitude || 0;
+      const lon = item.lon || item.longitude || 0;
+      const size = item.size || item.diameter_m / 1000 || 1;
+      const speed = item.speed || item.velocity_km_s || 15;
+
+      datasetImpacts[id] = { id, name, lat, lon, size, speed };
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = name;
+      datasetSelect.appendChild(opt);
+    }
+
+    status.textContent = `✅ Loaded ${Object.keys(datasetImpacts).length} records`;
+  } catch (err) {
+    console.error("Dataset load error:", err);
+    status.textContent = "⚠️ Failed to load dataset";
+  }
+}
+
+loadDatasetBtn.onclick = loadDatasetImpacts;
+
+
+ document.getElementById("runDataset").onclick = () => {
+  const key = datasetSelect.value;
+  if (!key) {
+    status.textContent = "⚠️ No dataset selected";
+    return;
+  }
+  const record = datasetImpacts[key];
+  if (!record) return;
+
+  const target = latLonToVector3(record.lat, record.lon, R);
+  const kmSize = record.size || 1;
+  const radiusSize = kmSize * 0.02;
+  const speed = (record.speed || 15) / 100;
+  const distance = 8;
+
+  // Launch meteor from above the impact point
+  const dirVec = target.clone().normalize();
+  const startPos = target.clone().addScaledVector(dirVec, distance * 5);
+  const moveDir = new THREE.Vector3().subVectors(target, startPos).normalize();
+
+  const geom = new THREE.SphereGeometry(radiusSize, 32, 32);
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0xff3300,
+    emissive: 0xff6600,
+    emissiveIntensity: 2.0
+  });
+  const meteor = new THREE.Mesh(geom, mat);
+  meteor.position.copy(startPos);
+
+  meteor.userData = {
+    dir: moveDir,
+    speed,
+    target,
+    id: `dataset-${record.id}`,
+    sizeKm: kmSize
+  };
+
+  scene.add(meteor);
+  meteors.push(meteor);
+
+  followMeteor = meteor;
+  status.textContent = `📊 Running dataset: ${record.name || key}`;
+  impactInfo.textContent = `Meteor launched toward dataset impact point...`;
+
+  sendImpactToBackend(target, record.size, record.speed);
+};
+
+  function latLonToVector3(lat, lon, radius) {
+    const phi = (90 - lat) * (Math.PI/180);
+    const theta = (lon + 180) * (Math.PI/180);
+    const x = -radius * Math.sin(phi) * Math.cos(theta);
+    const z = radius * Math.sin(phi) * Math.sin(theta);
+    const y = radius * Math.cos(phi);
+    return new THREE.Vector3(x,y,z);
+  }
+
+  // Backend fetch
+  async function sendImpactToBackend(point, size, speed) {
+    try {
+      const lat = Math.asin(point.y / R) * (180 / Math.PI);
+      const lon = Math.atan2(point.z, point.x) * (180 / Math.PI);
+      const response = await fetch("http://127.0.0.1:5000/simulate_impact", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ diameter_m: size * 1000, velocity_km_s: speed, latitude: lat, longitude: lon, pop_density_per_km2: 1200 })
+      });
+      const data = await response.json();
+      impactInfo.innerHTML = `<b>Impact Analysis</b><br>Lat: ${lat.toFixed(2)}°, Lon: ${lon.toFixed(2)}°<br>
+        Energy: ${data.energy_megatons} MT<br>Radius: ${data.impact_radius_km} km<br>
+        Population: ${data.population_affected}<br>Earthquake: M${data.earthquake_magnitude}`;
+    } catch (err) { console.error("Backend error:", err); impactInfo.textContent = "⚠️ Error contacting backend"; }
+  }
+
+  function impactEffect(point, sizeKm = 1) {
+  // sizeKm influences everything; clamp for visuals
+  const s = Math.max(0.2, Math.min(50, sizeKm)); // keep in reasonable range
+
+  // --- Flash light ---
+  const flashIntensity = 3 + Math.log10(s + 1) * 4; // bigger for larger objects
+  const flashRange = 2 + Math.sqrt(s) * 2;
+  const flash = new THREE.PointLight(0xffddaa, flashIntensity, flashRange);
+  flash.position.copy(point);
+  scene.add(flash);
+  setTimeout(() => scene.remove(flash), 300 + (s*10));
+
+  // --- Shockwave ring (scale with size) ---
+  // --- Shockwave ring (surface-aligned) ---
+// --- Curved Shockwave (spherical arc) ---
+const normal = point.clone().normalize(); // surface normal
+const lat = Math.asin(normal.y);
+const lon = Math.atan2(normal.x, normal.z);
+
+const arcRadius = R + 0.002;  // slightly above surface
+const arcWidth = 0.015 * Math.sqrt(s);
+const arcRes = 64;
+
+// start small spherical segment (thin band)
+const arcGeo = new THREE.SphereGeometry(
+  arcRadius,
+  arcRes,
+  arcRes / 2,
+  lon - Math.PI / 64,
+  Math.PI / 32,
+  lat - arcWidth / 2,
+  arcWidth
+);
+const arcMat = new THREE.MeshBasicMaterial({
+  color: 0xffaa66,
+  transparent: true,
+  opacity: 0.8,
+  side: THREE.DoubleSide
+});
+const arc = new THREE.Mesh(arcGeo, arcMat);
+scene.add(arc);
+
+// --- Animate expansion around the globe ---
+new TWEEN.Tween({ spread: 0.001, opacity: 0.8 })
+  .to({ spread: Math.PI / 2, opacity: 0.0 }, 2000 + s * 300)
+  .easing(TWEEN.Easing.Quadratic.Out)
+  .onUpdate(v => {
+    // rebuild geometry dynamically (wavefront spreads)
+    const newGeo = new THREE.SphereGeometry(
+      arcRadius,
+      arcRes,
+      arcRes / 2,
+      lon - v.spread,
+      v.spread * 2,
+      lat - arcWidth / 2,
+      arcWidth
+    );
+    arc.geometry.dispose();
+    arc.geometry = newGeo;
+    arc.material.opacity = v.opacity;
+  })
+  .onComplete(() => scene.remove(arc))
+  .start();
+
+
+
+  // --- Explosion particles (scale count and size with s) ---
+  const particleCount = Math.min(2000, Math.round(50 * Math.cbrt(s))); // cap for perf
+  const positions = new Float32Array(particleCount * 3);
+  for (let i = 0; i < particleCount; i++) {
+    const dir = new THREE.Vector3((Math.random()-0.5), (Math.random()-0.4), (Math.random()-0.5)).normalize();
+    positions[i*3] = dir.x;
+    positions[i*3 + 1] = dir.y;
+    positions[i*3 + 2] = dir.z;
+  }
+  const particleGeo = new THREE.BufferGeometry();
+  particleGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const particleSize = Math.min(0.6, 0.04 * Math.cbrt(s));
+  const particleMat = new THREE.PointsMaterial({ color: 0xffcc66, size: particleSize, transparent: true, opacity: 1.0 });
+  const particles = new THREE.Points(particleGeo, particleMat);
+  particles.position.copy(point);
+  scene.add(particles);
+
+  new TWEEN.Tween({ scale: 1, o: 1 })
+    .to({ scale: 6 * Math.cbrt(s), o: 0 }, 2000 + s*300)
+    .onUpdate(v => {
+      particles.scale.set(v.scale, v.scale, v.scale);
+      particleMat.opacity = v.o;
+    })
+    .onComplete(() => scene.remove(particles))
+    .start();
+
+ // --- Crater (visual only) sized by s ---
+
+
+  // --- Camera shake (duration/proportional to s) ---
+  const originalPos = camera.position.clone();
+  const shakeDuration = 400 + Math.min(2600, s * 200); // ms
+  const shakeStart = Date.now();
+  const shakeAmp = 0.02 + Math.min(0.6, 0.01 * Math.cbrt(s));
+
+  function doShake() {
+    const t = (Date.now() - shakeStart) / shakeDuration;
+    if (t >= 1) {
+      camera.position.copy(originalPos);
+      return;
+    }
+    // decaying random jitter
+    const decay = 1 - t;
+    camera.position.x = originalPos.x + (Math.random() - 0.5) * shakeAmp * decay;
+    camera.position.y = originalPos.y + (Math.random() - 0.5) * shakeAmp * decay;
+    camera.position.z = originalPos.z + (Math.random() - 0.5) * shakeAmp * decay;
+    requestAnimationFrame(doShake);
+  }
+  doShake();
+}
+
+
+function addCraterDecal(point, sizeKm = 1) {
+  // Only fallback decal logic remains
+  const normal = point.clone().normalize();
+  const up = new THREE.Vector3(0, 1, 0);
+  const axis = new THREE.Vector3().crossVectors(up, normal).normalize();
+  const angle = Math.acos(Math.max(-1, Math.min(1, up.dot(normal))));
+  const quat = new THREE.Quaternion().setFromAxisAngle(axis, angle);
+  const orientation = new THREE.Euler().setFromQuaternion(quat);
+  const position = point.clone();
+  const radiusInSceneUnits = (earthMesh.geometry && earthMesh.geometry.parameters && earthMesh.geometry.parameters.radius) || R;
+  const earthRadiusKm = 6371;
+  const kmToScene = radiusInSceneUnits / earthRadiusKm;
+  const craterDiameterScene = Math.max(0.05, sizeKm * kmToScene * 2.5);
+  const depth = craterDiameterScene * 0.5;
+  const sizeVec = new THREE.Vector3(craterDiameterScene, craterDiameterScene, depth);
+  const craterMaterial = new THREE.MeshStandardMaterial({
+    color: 0xff2222,
+    transparent: true,
+    opacity: 0.7,
+    roughness: 0.5,
+    metalness: 0,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -10,
+    blending: THREE.NormalBlending,
+    side: THREE.DoubleSide
+  });
+  const decalGeometry = new DecalGeometry(earthMesh, position, orientation, sizeVec);
+  const crater = new THREE.Mesh(decalGeometry, craterMaterial);
+  crater.userData.isDecal = true;
+  scene.add(crater);
+}
+
+
+  // Meteor updates
+  function updateMeteors(){
+    if (showOrbiting) {
+      // Animate orbiting asteroids
+      for (const a of orbitingAsteroids) {
+        a.userData.orbitAngle += a.userData.orbitSpeed;
+        const r = a.userData.orbitRadius;
+        const angle = a.userData.orbitAngle;
+        const incline = a.userData.orbitIncline;
+        a.position.set(
+          Math.cos(angle)*r,
+          Math.sin(incline)*r,
+          Math.sin(angle)*r
+        );
+      }
+      return;
+    }
+    for(let i=meteors.length-1;i>=0;i--){
+      const m = meteors[i];
+      const toTarget = new THREE.Vector3().subVectors(m.userData.target, m.position);
+      if(toTarget.length() < m.userData.speed){
+        m.position.copy(m.userData.target); scene.remove(m); meteors.splice(i,1);
+        for(let o=0;o<meteorList.options.length;o++){ if(meteorList.options[o].value == m.userData.id) meteorList.remove(o); }
+        status.textContent = `💥 Meteor ${m.userData.id} impacted Earth!`;
+
+      // read size from meteor.userData (fallback to UI)
+      const sizeKm = m.userData.sizeKm || parseFloat(sizeEl.value) || 1;
+
+      // cinematic effect scaled by size
+      impactEffect(m.userData.target, sizeKm);
+      addCraterDecal(m.userData.target, sizeKm);
+
+
+      // save record (store size)
+      const impactRecord = { id: m.userData.id, target: m.userData.target.clone(), size: sizeKm, speed: parseFloat(speedEl.value) };
+      savedImpacts.push(impactRecord);
+
+      // update history UI
+      const opt = document.createElement("option");
+      opt.value = impactRecord.id;
+      opt.textContent = `Impact ${impactRecord.id}`;
+      historyList.appendChild(opt);
+
+      sendImpactToBackend(impactRecord.target, impactRecord.size, impactRecord.speed);
+      } 
+      else { m.position.addScaledVector(m.userData.dir, m.userData.speed); }
+    }
+  }
+
+  // Analyze button
+  analyzeBtn.onclick = () => {
+    const point = new THREE.Vector3(1,0,0);
+    sendImpactToBackend(point, parseFloat(sizeEl.value), parseFloat(speedEl.value));
+    status.textContent = "📡 Sending manual impact to backend...";
+  };
+
+  // Animation
+  function animate() {
+  requestAnimationFrame(animate);
+  TWEEN.update(); // needed for the crater fade and impact animations
+
+    if (!paused) updateMeteors();
+
+    if (followMeteor && scene.children.includes(followMeteor)) {
+      // Camera follows meteor
+      const offset = new THREE.Vector3(0, 0.5, -2); // Camera offset behind meteor
+      const meteorPos = followMeteor.position.clone();
+      const dir = followMeteor.userData.dir.clone().normalize();
+      // Offset is relative to meteor's direction
+      const camPos = meteorPos.clone().add(dir.clone().multiplyScalar(-2)).add(new THREE.Vector3(0, 0.5, 0));
+      camera.position.lerp(camPos, 0.3); // Smooth follow
+      camera.lookAt(meteorPos);
+      controls.enabled = false;
+    } else {
+      controls.enabled = true;
+      controls.update();
+    }
+    renderer.render(scene, camera);
+  }
+  animate();
+
+  // Draggable panel
+  const panel = document.getElementById("controlPanel");
+  const header = document.getElementById("panelHeader");
+  let isDragging = false, offsetX = 0, offsetY = 0;
+  header.addEventListener("mousedown", (e) => { isDragging = true; offsetX = e.clientX - panel.offsetLeft; offsetY = e.clientY - panel.offsetTop; document.body.style.userSelect = "none"; });
+  window.addEventListener("mousemove", (e) => { if (isDragging) { panel.style.left = `${e.clientX - offsetX}px`; panel.style.top = `${e.clientY - offsetY}px`; panel.style.right = "auto"; } });
+  window.addEventListener("mouseup", () => { isDragging = false; document.body.style.userSelect = "auto"; });
+
+  window.addEventListener('resize', ()=>{ camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
+
+  </script>
+</body>
+</html>
